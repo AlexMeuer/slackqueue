@@ -1,0 +1,6 @@
+This readme is a stub. I hope to expand it soon.
+
+To run this, set the `SLACK_TOKEN` env var, then run the program. You'll need to register the app with Slack seperately and expose this program to it somehow, whether that's cloud hosting or a tool like ngrok.
+
+As of writing this, the program doesn't verify that requests actuall come from slack. That's a major TODO.
+
