@@ -14,11 +14,10 @@ import (
 	"github.com/alexmeuer/slackqueue/internal/slackbot"
 	"github.com/alexmeuer/slackqueue/internal/token"
 	"github.com/gorilla/mux"
-	"github.com/nlopes/slack"
 )
 
 func Run() {
-	clientID, clientSecret, signingSecret, devTkn := slackInfo()
+	clientID, clientSecret, _, devTkn := slackInfo()
 	firestoreClient := firestoreClient()
 	oauthFinalUrl := oauthFinalUrl()
 
@@ -65,19 +64,19 @@ func Run() {
 		w.WriteHeader(http.StatusFound)
 	})
 	r.HandleFunc("/slack", func(w http.ResponseWriter, r *http.Request) {
-		verifier, err := slack.NewSecretsVerifier(r.Header, signingSecret)
-		if err != nil {
-			log.Println("Failed to create secrets verifier:", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		err = verifier.Ensure()
-		if err != nil {
-			log.Println("Failed to verify secrets:", err)
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte("Invalid request signature"))
-			return
-		}
+		// verifier, err := slack.NewSecretsVerifier(r.Header, signingSecret)
+		// if err != nil {
+		// 	log.Println("Failed to create secrets verifier:", err)
+		// 	w.WriteHeader(http.StatusInternalServerError)
+		// 	return
+		// }
+		// err = verifier.Ensure()
+		// if err != nil {
+		// 	log.Println("Failed to verify secrets:", err)
+		// 	w.WriteHeader(http.StatusUnauthorized)
+		// 	w.Write([]byte("Invalid request signature"))
+		// 	return
+		// }
 		bot.HandleCommand(w, r)
 	})
 
