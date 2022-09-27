@@ -9,19 +9,28 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"github.com/alexmeuer/slackqueue/internal/queue"
 	"github.com/alexmeuer/slackqueue/internal/slackbot"
 	"github.com/gorilla/mux"
+	"github.com/nlopes/slack"
 )
 
 func Run() {
-	slackTkn, ok := os.LookupEnv("SLACK_TOKEN")
-	if !ok {
-		log.Fatal("SLACK_TOKEN not set")
+	slackTkn, slackSecret := slackInfo()
+	firestoreClient := firestoreClient()
+	var store slackbot.QueueStore
+	if firestoreClient != nil {
+		log.Println("Using Google Cloud Datastore for queue storage.")
+		store = queue.NewFirestoreStore(firestoreClient)
+	} else {
+		log.Println("Using in-memory queue storage.")
+		store = queue.NewInMemoryStore()
 	}
-	port, ok := os.LookupEnv("PORT")
-	if !ok {
-		port = "4578"
+
+	bot, err := slackbot.New(slackTkn, store)
+	if err != nil {
+		log.Fatalln("Failed to start Slack bot:", err)
 	}
 
 	sig := make(chan os.Signal)
@@ -32,19 +41,25 @@ func Run() {
 	r.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("pong"))
 	})
-
-	log.Println("Starting Slack bot.")
-	slack, err := slackbot.New(slackTkn, queue.NewInMemoryStore())
-	if err != nil {
-		log.Fatalln("Failed to start Slack bot:", err)
-	}
 	r.HandleFunc("/slack", func(w http.ResponseWriter, r *http.Request) {
-		// TODO: verify the request came from Slack via signing secret.
-		slack.HandleCommand(w, r)
+		verifier, err := slack.NewSecretsVerifier(r.Header, slackSecret)
+		if err != nil {
+			log.Println("Failed to create secrets verifier:", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		err = verifier.Ensure()
+		if err != nil {
+			log.Println("Failed to verify secrets:", err)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("Invalid request signature"))
+			return
+		}
+		bot.HandleCommand(w, r)
 	})
 
 	srv := http.Server{
-		Addr:              ":" + port,
+		Addr:              ":" + port(),
 		Handler:           r,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 0,
@@ -65,4 +80,38 @@ func Run() {
 	if err = srv.Shutdown(ctx); err != nil {
 		log.Fatalln(err)
 	}
+}
+
+// slackInfo gets the slack token and signing secret from the environment.
+// If either is not set, it will log a fatal error and exit.
+func slackInfo() (string, string) {
+	tkn, ok := os.LookupEnv("SLACK_TOKEN")
+	if !ok {
+		log.Fatal("SLACK_TOKEN not set")
+	}
+	secret, ok := os.LookupEnv("SLACK_SIGNING_SECRET")
+	if !ok {
+		log.Fatal("SLACK_SIGNING_SECRET not set")
+	}
+	return tkn, secret
+}
+
+func firestoreClient() *firestore.Client {
+	projectID, ok := os.LookupEnv("GOOGLE_PROJECT_ID")
+	if !ok || projectID == "" {
+		return nil
+	}
+	client, err := firestore.NewClient(context.Background(), projectID)
+	if err != nil {
+		log.Fatalln("Failed to create Firestore client:", err)
+	}
+	return client
+}
+
+func port() string {
+	port, ok := os.LookupEnv("PORT")
+	if !ok {
+		port = "4578"
+	}
+	return port
 }

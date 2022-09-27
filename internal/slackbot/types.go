@@ -1,6 +1,7 @@
 package slackbot
 
 import (
+	"context"
 	"sync"
 
 	"github.com/alexmeuer/slackqueue/internal/queue"
@@ -8,8 +9,8 @@ import (
 )
 
 type QueueStore interface {
-	Enqueue(ID string, item queue.Item) ([]queue.Item, error)
-	Dequeue(ID string, item queue.Item) ([]queue.Item, error)
+	Enqueue(ctx context.Context, ID string, item queue.Item) ([]queue.Item, error)
+	Dequeue(ctx context.Context, ID string, item queue.Item) ([]queue.Item, error)
 }
 
 type bot struct {

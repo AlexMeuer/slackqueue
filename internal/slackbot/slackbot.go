@@ -1,6 +1,7 @@
 package slackbot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -36,8 +37,7 @@ func New(accessToken string, store QueueStore) (*bot, error) {
 }
 
 func (b *bot) HandleCommand(w http.ResponseWriter, r *http.Request) {
-	// TODO: propagate the request Context through to the slack requests.
-
+	//! TODO: propagate the request Context through to the slack requests.
 	p, err := decodePayload(r)
 	if err != nil {
 		log.Println("[Slack] Failed to decode payload.", err)
@@ -50,7 +50,7 @@ func (b *bot) HandleCommand(w http.ResponseWriter, r *http.Request) {
 			log.Println("[Slack] Failed to parse interaction json.", err)
 			w.WriteHeader(http.StatusBadRequest)
 		}
-		b.handleInteraction(w, &i)
+		b.handleInteraction(r.Context(), w, &i)
 		return
 	}
 
@@ -58,7 +58,13 @@ func (b *bot) HandleCommand(w http.ResponseWriter, r *http.Request) {
 	switch p.Command {
 	// TODO: clean up these cases.
 	case "/joinq":
-		q, err := b.doLocked(p.ChannelId, p.UserId, p.UserName, b.queues.Enqueue)
+		b.mux.Lock()
+		defer b.mux.Unlock()
+		q, err := b.queues.Enqueue(r.Context(), p.ChannelId, queue.Item{
+			UserID:   p.UserId,
+			UserName: p.UserName,
+		})
+
 		if err != nil {
 			b.postEphemeralError(p.ChannelId, p.UserId, p.ChannelName, p.UserName, err)
 			return
@@ -67,7 +73,12 @@ func (b *bot) HandleCommand(w http.ResponseWriter, r *http.Request) {
 			b.postEphemeralError(p.ChannelId, p.UserId, p.ChannelName, p.UserName, err)
 		}
 	case "/leaveq":
-		q, err := b.doLocked(p.ChannelId, p.UserId, p.UserName, b.queues.Dequeue)
+		b.mux.Lock()
+		defer b.mux.Unlock()
+		q, err := b.queues.Dequeue(r.Context(), p.ChannelId, queue.Item{
+			UserID:   p.UserId,
+			UserName: p.UserName,
+		})
 		if err != nil {
 			b.postEphemeralError(p.ChannelId, p.UserId, p.ChannelName, p.UserName, err)
 			return
@@ -87,16 +98,7 @@ func decodePayload(r *http.Request) (p payload, err error) {
 	return
 }
 
-func (b *bot) doLocked(queueID, userID, userName string, fn func(string, queue.Item) ([]queue.Item, error)) ([]queue.Item, error) {
-	b.mux.Lock()
-	defer b.mux.Unlock()
-	return fn(queueID, queue.Item{
-		UserID:   userID,
-		UserName: userName,
-	})
-}
-
-func (b *bot) handleInteraction(w http.ResponseWriter, i *interaction) {
+func (b *bot) handleInteraction(ctx context.Context, w http.ResponseWriter, i *interaction) {
 	log.Println("[Slack] Received interaction from", i.User.Name)
 
 	if len(i.Actions) < 1 {
@@ -108,7 +110,12 @@ func (b *bot) handleInteraction(w http.ResponseWriter, i *interaction) {
 	switch a := i.Actions[0]; a.ActionID {
 	case ActionJoin:
 		log.Println("[Slack]", i.User.Name, "would like to join the queue for", i.Channel.ID)
-		q, err := b.doLocked(i.Channel.ID, i.User.ID, i.User.Name, b.queues.Enqueue)
+		b.mux.Lock()
+		defer b.mux.Unlock()
+		q, err := b.queues.Enqueue(ctx, i.Channel.ID, queue.Item{
+			UserID:   i.User.ID,
+			UserName: i.User.Name,
+		})
 		if err != nil {
 			b.postEphemeralError(i.Channel.ID, i.User.ID, i.Channel.Name, i.User.Name, err)
 			return
@@ -122,7 +129,12 @@ func (b *bot) handleInteraction(w http.ResponseWriter, i *interaction) {
 
 	case ActionLeave:
 		log.Println("[Slack]", i.User.Name, "would like to leave the queue for", i.Channel.ID)
-		q, err := b.doLocked(i.Channel.ID, i.User.ID, i.User.Name, b.queues.Dequeue)
+		b.mux.Lock()
+		defer b.mux.Unlock()
+		q, err := b.queues.Dequeue(ctx, i.Channel.ID, queue.Item{
+			UserID:   i.User.ID,
+			UserName: i.User.Name,
+		})
 		if err != nil {
 			b.postEphemeralError(i.Channel.ID, i.User.ID, i.Channel.Name, i.User.Name, err)
 			return
@@ -185,7 +197,7 @@ func (b *bot) buildBlocks(id, name string, q []queue.Item) (blocks []slack.Block
 		slack.NewDividerBlock(),
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, queueStr, false, false), nil, nil),
 		slack.NewActionBlock("actions", joinButton, leaveButton),
-		slack.NewContextBlock("context", slack.NewTextBlockObject(slack.MarkdownType, "GPLv3 | Authored by @AlexMeuer | https://github.com/alexmeuer/slackqueue", false, false)),
+		slack.NewContextBlock("context", slack.NewTextBlockObject(slack.MarkdownType, "GPLv3 | Authored by @AlexMeuer | github.com/alexmeuer/slackqueue", false, false)),
 	}
 	return
 }

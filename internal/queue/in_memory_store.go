@@ -1,6 +1,9 @@
 package queue
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 type inMemoryStore struct {
 	Queues map[string][]Item
@@ -12,12 +15,12 @@ func NewInMemoryStore() *inMemoryStore {
 	}
 }
 
-func (s *inMemoryStore) Enqueue(ID string, item Item) ([]Item, error) {
+func (s *inMemoryStore) Enqueue(_ context.Context, ID string, item Item) ([]Item, error) {
 	s.Queues[ID] = append(s.Queues[ID], item)
 	return s.Queues[ID], nil
 }
 
-func (s *inMemoryStore) Dequeue(ID string, item Item) ([]Item, error) {
+func (s *inMemoryStore) Dequeue(_ context.Context, ID string, item Item) ([]Item, error) {
 	q, ok := s.Queues[ID]
 	if !ok {
 		return nil, fmt.Errorf("queue not found with id: %s", ID)
