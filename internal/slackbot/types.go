@@ -13,10 +13,18 @@ type QueueStore interface {
 	Dequeue(ctx context.Context, ID string, item queue.Item) ([]queue.Item, error)
 }
 
+type TokenStore interface {
+	GetToken(ctx context.Context) (string, error)
+	SetToken(ctx context.Context, token string) error
+}
+
 type bot struct {
-	client *slack.Client
-	queues QueueStore
-	mux    sync.Mutex
+	client       *slack.Client
+	clientID     string
+	clientSecret string
+	tknStore     TokenStore
+	queues       QueueStore
+	mux          sync.Mutex
 }
 
 type payload struct {

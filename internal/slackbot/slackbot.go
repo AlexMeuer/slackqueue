@@ -1,11 +1,14 @@
 package slackbot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -19,21 +22,75 @@ const (
 	ActionLeave = "leaveQueue"
 )
 
-func New(accessToken string, store QueueStore) (*bot, error) {
-	slackApi := slack.New(accessToken)
+func New(ctx context.Context, clientID, clientSecret string, tknStore TokenStore, queueStore QueueStore) (*bot, error) {
+	tkn, _ := tknStore.GetToken(ctx)
+	b := &bot{
+		client:       slack.New(tkn),
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		tknStore:     tknStore,
+		queues:       queueStore,
+		mux:          sync.Mutex{},
+	}
+	if tkn == "" {
+		return b, nil
+	}
+	if _, err := b.client.AuthTest(); err != nil {
+		return b, err
+	}
+	return b, b.client.SetUserAsActive()
+}
+
+func (b *bot) ExhangeCodeForToken(ctx context.Context, code string) error {
+	data := url.Values{}
+	data.Set("client_id", b.clientID)
+	data.Set("client_secret", b.clientSecret)
+	data.Set("code", code)
+	client := &http.Client{}
+	log.Println("[DEBUG] data is", data.Encode())
+	r, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://slack.com/api/oauth.v2.access", strings.NewReader(data.Encode()))
+	r.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := client.Do(r)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("slack returned status code %d", resp.StatusCode)
+	}
+	buf := bytes.Buffer{}
+	var decodedBody struct {
+		Ok          bool   `json:"ok"`
+		AccessToken string `json:"access_token"`
+		BotUserID   string `json:"bot_user_id"`
+		Error       string `json:"error,omitempty"`
+	}
+	err = json.NewDecoder(io.TeeReader(resp.Body, &buf)).Decode(&decodedBody)
+	if err != nil {
+		return err
+	}
+	log.Println("[DEBUG] Got response code", resp.StatusCode, "with body", buf.String())
+	if !decodedBody.Ok {
+		return fmt.Errorf("failed to exchange code for token: %s", decodedBody.Error)
+	}
+	log.Println("[Slack] Successfully exchanged one-time OAuth code for token for", decodedBody.BotUserID)
+	err = b.tknStore.SetToken(ctx, decodedBody.AccessToken)
+	if err != nil {
+		log.Println("Failed to save token to store", err)
+	}
+
+	slackApi := slack.New(decodedBody.AccessToken)
 	if r, err := slackApi.AuthTest(); err != nil {
-		return nil, err
+		return err
 	} else {
 		log.Println("[Slack] Authenticated for team", r.Team, "as user", r.User)
 	}
-	if err := slackApi.SetUserAsActive(); err != nil {
-		return nil, err
-	}
-	return &bot{
-		client: slackApi,
-		queues: store,
-		mux:    sync.Mutex{},
-	}, nil
+
+	b.mux.Lock()
+	defer b.mux.Unlock()
+	b.client = slackApi
+	return slackApi.SetUserAsActive()
 }
 
 func (b *bot) HandleCommand(w http.ResponseWriter, r *http.Request) {

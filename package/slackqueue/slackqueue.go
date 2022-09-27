@@ -12,23 +12,29 @@ import (
 	"cloud.google.com/go/firestore"
 	"github.com/alexmeuer/slackqueue/internal/queue"
 	"github.com/alexmeuer/slackqueue/internal/slackbot"
+	"github.com/alexmeuer/slackqueue/internal/token"
 	"github.com/gorilla/mux"
 	"github.com/nlopes/slack"
 )
 
 func Run() {
-	slackTkn, slackSecret := slackInfo()
+	clientID, clientSecret, signingSecret, devTkn := slackInfo()
 	firestoreClient := firestoreClient()
-	var store slackbot.QueueStore
+	oauthFinalUrl := oauthFinalUrl()
+
+	var queueStore slackbot.QueueStore
+	var tknStore slackbot.TokenStore
 	if firestoreClient != nil {
-		log.Println("Using Google Cloud Datastore for queue storage.")
-		store = queue.NewFirestoreStore(firestoreClient)
+		log.Println("Using Google Cloud Datastore for queue and token storage.")
+		queueStore = queue.NewFirestoreStore(firestoreClient)
+		tknStore = token.NewFirestoreStore(firestoreClient)
 	} else {
-		log.Println("Using in-memory queue storage.")
-		store = queue.NewInMemoryStore()
+		log.Println("Using in-memory queue and token storage.")
+		queueStore = queue.NewInMemoryStore()
+		tknStore = &token.InMemoryStore{Token: devTkn}
 	}
 
-	bot, err := slackbot.New(slackTkn, store)
+	bot, err := slackbot.New(context.Background(), clientID, clientSecret, tknStore, queueStore)
 	if err != nil {
 		log.Fatalln("Failed to start Slack bot:", err)
 	}
@@ -37,12 +43,29 @@ func Run() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGABRT, syscall.SIGTERM)
 
 	r := mux.NewRouter()
-
 	r.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("pong"))
 	})
+	r.HandleFunc("/oauth", func(w http.ResponseWriter, r *http.Request) {
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			log.Println("No code provided.")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("No code provided."))
+			return
+		}
+		err := bot.ExhangeCodeForToken(r.Context(), code)
+		if err != nil {
+			log.Println("Failed to exchange code for token:", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Failed to exchange code for token."))
+			return
+		}
+		w.Header().Set("Location", oauthFinalUrl)
+		w.WriteHeader(http.StatusFound)
+	})
 	r.HandleFunc("/slack", func(w http.ResponseWriter, r *http.Request) {
-		verifier, err := slack.NewSecretsVerifier(r.Header, slackSecret)
+		verifier, err := slack.NewSecretsVerifier(r.Header, signingSecret)
 		if err != nil {
 			log.Println("Failed to create secrets verifier:", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -82,18 +105,27 @@ func Run() {
 	}
 }
 
-// slackInfo gets the slack token and signing secret from the environment.
-// If either is not set, it will log a fatal error and exit.
-func slackInfo() (string, string) {
-	tkn, ok := os.LookupEnv("SLACK_TOKEN")
-	if !ok {
-		log.Fatal("SLACK_TOKEN not set")
+func slackInfo() (string, string, string, string) {
+	clientID, clientIDOk := os.LookupEnv("SLACK_CLIENT_ID")
+	clientSecret, clientSecretOk := os.LookupEnv("SLACK_CLIENT_SECRET")
+	token, tokenOk := os.LookupEnv("SLACK_TOKEN")
+	if !(clientIDOk && clientSecretOk) && !tokenOk {
+		log.Fatalln("Either SLACK_TOKEN or both SLACK_CLIENT_ID and SLACK_CLIENT_SECRET must be set.")
 	}
-	secret, ok := os.LookupEnv("SLACK_SIGNING_SECRET")
-	if !ok {
-		log.Fatal("SLACK_SIGNING_SECRET not set")
+	signingSecret, signingSecretOk := os.LookupEnv("SLACK_SIGNING_SECRET")
+	if !signingSecretOk {
+		log.Fatalln("SLACK_SIGNING_SECRET must be set.")
 	}
-	return tkn, secret
+	return clientID, clientSecret, signingSecret, token
+}
+
+// oauthFinalUrl gets the final URL to redirect to after OAuth is complete from environment variables.
+func oauthFinalUrl() string {
+	url, ok := os.LookupEnv("OAUTH_FINAL_URL")
+	if !ok {
+		log.Fatalln("OAUTH_FINAL_URL must be set.")
+	}
+	return url
 }
 
 func firestoreClient() *firestore.Client {

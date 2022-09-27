@@ -18,8 +18,11 @@ RUN apk add ca-certificates
 COPY --from=build_base /app/out/slackqueue /app/slackqueue
 
 ENV SLACK_TOKEN=
+ENV SLACK_CLIENT_ID=
+ENV SLACK_CLIENT_SECRET=
 ENV SLACK_SIGNING_SECRET=
 ENV GOOGLE_PROJECT_ID=
+ENV OAUTH_FINAL_URL=
 ENV PORT=8080
 
 EXPOSE $PORT
